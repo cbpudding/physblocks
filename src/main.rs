@@ -12,35 +12,77 @@ use rapier3d::prelude::{
     IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodyBuilder,
     RigidBodyHandle, RigidBodySet, RigidBodyType,
 };
+use serde::{Deserialize, Serialize};
+use std::{error::Error, fs::File, io::Read, path::Path};
 
+#[derive(Deserialize, Serialize)]
 struct Block {
+    #[serde(default = "Block::default_color")]
+    color: Vector3<f32>,
+    #[serde(default = "Block::default_fixed")]
+    fixed: bool,
+    #[serde(default = "Block::default_position")]
+    position: Isometry3<f32>,
+    #[serde(default = "Block::default_size")]
+    size: Vector3<f32>,
+}
+
+impl Block {
+    fn default_color() -> Vector3<f32> {
+        Vector3::new(0.5, 0.5, 0.5)
+    }
+
+    fn default_fixed() -> bool {
+        false
+    }
+
+    fn default_position() -> Isometry3<f32> {
+        Isometry3::new(Vector3::zeros(), Vector3::zeros())
+    }
+
+    fn default_size() -> Vector3<f32> {
+        Vector3::new(2.0, 1.0, 4.0)
+    }
+}
+
+impl Default for Block {
+    fn default() -> Self {
+        Self {
+            color: Self::default_color(),
+            fixed: Self::default_fixed(),
+            position: Self::default_position(),
+            size: Self::default_size(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BlockHandle {
     body: RigidBodyHandle,
     node: SceneNode,
 }
 
-impl Block {
-    fn new(
-        world: &mut World,
-        color: Vector3<f32>,
-        position: Isometry3<f32>,
-        size: Vector3<f32>,
-        fixed: bool,
-    ) -> Self {
-        let body = RigidBodyBuilder::new(if fixed {
+impl BlockHandle {
+    fn new(world: &mut World, block: &Block) -> Self {
+        let body = RigidBodyBuilder::new(if block.fixed {
             RigidBodyType::Static
         } else {
             RigidBodyType::Dynamic
         })
-        .position(position)
+        .position(block.position)
         .build();
         let body_handle = world.rigid_body_set.insert(body);
-        let collider = ColliderBuilder::cuboid(size.x / 2.0, size.y / 2.0, size.z / 2.0).build();
+        let collider =
+            ColliderBuilder::cuboid(block.size.x / 2.0, block.size.y / 2.0, block.size.z / 2.0)
+                .build();
         world
             .collider_set
             .insert_with_parent(collider, body_handle, &mut world.rigid_body_set);
-        let mut node = world.scene.add_cube(size.x, size.y, size.z);
-        node.set_color(color.x, color.y, color.z);
-        node.set_local_transformation(position);
+        let mut node = world
+            .scene
+            .add_cube(block.size.x, block.size.y, block.size.z);
+        node.set_color(block.color.x, block.color.y, block.color.z);
+        node.set_local_transformation(block.position);
         Self {
             body: body_handle,
             node,
@@ -57,7 +99,7 @@ impl Block {
 }
 
 struct World {
-    blocks: Vec<Block>,
+    blocks: Vec<BlockHandle>,
     broad_phase: BroadPhase,
     camera: ArcBall,
     ccd_solver: CCDSolver,
@@ -74,15 +116,22 @@ struct World {
 }
 
 impl World {
-    fn add_block(
-        &mut self,
-        color: Vector3<f32>,
-        position: Isometry3<f32>,
-        size: Vector3<f32>,
-        fixed: bool,
-    ) {
-        let block = Block::new(self, color, position, size, fixed);
-        self.blocks.push(block);
+    fn add_block(&mut self, block: &Block) -> BlockHandle {
+        let block = BlockHandle::new(self, block);
+        self.blocks.push(block.clone());
+        block
+    }
+
+    fn load<P: AsRef<Path>>(root: &mut SceneNode, path: P) -> Result<Self, Box<dyn Error>> {
+        let mut file = File::open(path)?;
+        let mut buffer = String::new();
+        file.read_to_string(&mut buffer)?;
+        let archive: WorldArchive = ron::from_str(&buffer)?;
+        let mut world = Self::new(root);
+        for block in archive.blocks {
+            world.add_block(&block);
+        }
+        Ok(world)
     }
 
     fn new(root: &mut SceneNode) -> Self {
@@ -139,39 +188,14 @@ impl State for World {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+struct WorldArchive {
+    blocks: Vec<Block>,
+}
+
 fn main() {
     let mut window = Window::new("PhysBlocks");
-    let mut world = World::new(window.scene_mut());
     window.set_light(Light::StickToCamera);
-    world.add_block(
-        Vector3::new(0.0, 1.0, 0.0),
-        Isometry3::new(Vector3::new(0.0, 0.0, 0.0), Vector3::zeros()),
-        Vector3::new(64.0, 0.5, 64.0),
-        true,
-    );
-    world.add_block(
-        Vector3::new(0.5, 0.5, 0.5),
-        Isometry3::new(Vector3::new(0.0, 1.0, 0.0), Vector3::zeros()),
-        Vector3::new(2.0, 1.0, 4.0),
-        false,
-    );
-    world.add_block(
-        Vector3::new(0.5, 0.5, 0.5),
-        Isometry3::new(Vector3::new(0.0, 1.0, 4.0), Vector3::zeros()),
-        Vector3::new(2.0, 1.0, 4.0),
-        false,
-    );
-    world.add_block(
-        Vector3::new(0.5, 0.5, 0.5),
-        Isometry3::new(Vector3::new(0.0, 2.0, 2.0), Vector3::zeros()),
-        Vector3::new(2.0, 1.0, 4.0),
-        false,
-    );
-    world.add_block(
-        Vector3::new(0.5, 0.5, 0.5),
-        Isometry3::new(Vector3::new(0.0, 64.0, 3.0), Vector3::zeros()),
-        Vector3::new(2.0, 1.0, 4.0),
-        false,
-    );
+    let world = World::load(window.scene_mut(), "default.pbw").unwrap();
     window.render_loop(world);
 }
