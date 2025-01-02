@@ -6,11 +6,11 @@ use kiss3d::{
     scene::SceneNode,
     window::{State, Window},
 };
-use nalgebra::{Isometry3, Point3, Vector3};
+use nalgebra::{Isometry3, Vector3};
 use rapier3d::prelude::{
-    BroadPhase, CCDSolver, ColliderBuilder, ColliderSet, ImpulseJointSet, IntegrationParameters,
-    IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodyBuilder,
-    RigidBodyHandle, RigidBodySet, RigidBodyType,
+    BroadPhase, CCDSolver, ColliderBuilder, ColliderSet, DefaultBroadPhase, ImpulseJointSet,
+    IntegrationParameters, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline,
+    QueryPipeline, RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType,
 };
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fs::File, io::Read, path::Path};
@@ -63,9 +63,29 @@ struct BlockHandle {
 }
 
 impl BlockHandle {
+    fn kiss_isometry(isometry: Isometry3<f32>) -> kiss3d::nalgebra::Isometry3<f32> {
+        // Cursed type interoperability between two versions of the same crate.
+        // Send help. ~ahill
+        kiss3d::nalgebra::Isometry3 {
+            translation: kiss3d::nalgebra::Translation3::new(
+                isometry.translation.x,
+                isometry.translation.y,
+                isometry.translation.z,
+            ),
+            rotation: kiss3d::nalgebra::Unit::new_normalize(kiss3d::nalgebra::Quaternion {
+                coords: kiss3d::nalgebra::Vector4::new(
+                    isometry.rotation.coords.x,
+                    isometry.rotation.coords.y,
+                    isometry.rotation.coords.z,
+                    isometry.rotation.coords.w,
+                ),
+            }),
+        }
+    }
+
     fn new(world: &mut World, block: &Block) -> Self {
         let body = RigidBodyBuilder::new(if block.fixed {
-            RigidBodyType::Static
+            RigidBodyType::Fixed
         } else {
             RigidBodyType::Dynamic
         })
@@ -82,7 +102,7 @@ impl BlockHandle {
             .scene
             .add_cube(block.size.x, block.size.y, block.size.z);
         node.set_color(block.color.x, block.color.y, block.color.z);
-        node.set_local_transformation(block.position);
+        node.set_local_transformation(Self::kiss_isometry(block.position));
         Self {
             body: body_handle,
             node,
@@ -91,7 +111,8 @@ impl BlockHandle {
 
     fn update(&mut self, rigid_body_set: &RigidBodySet) {
         if let Some(body) = rigid_body_set.get(self.body) {
-            self.node.set_local_transformation(*body.position());
+            self.node
+                .set_local_transformation(Self::kiss_isometry(*body.position()));
         } else {
             eprintln!("Stale RigidBodyHandle!");
         }
@@ -100,7 +121,7 @@ impl BlockHandle {
 
 struct World {
     blocks: Vec<BlockHandle>,
-    broad_phase: BroadPhase,
+    broad_phase: Box<dyn BroadPhase>,
     camera: ArcBall,
     ccd_solver: CCDSolver,
     collider_set: ColliderSet,
@@ -112,6 +133,7 @@ struct World {
     narrow_phase: NarrowPhase,
     physics_pipeline: PhysicsPipeline,
     rigid_body_set: RigidBodySet,
+    query_pipeline: QueryPipeline,
     scene: SceneNode,
 }
 
@@ -139,8 +161,11 @@ impl World {
         root.add_child(scene.clone());
         Self {
             blocks: Vec::new(),
-            broad_phase: BroadPhase::default(),
-            camera: ArcBall::new(Point3::new(64.0, 16.0, 0.0), Point3::origin()),
+            broad_phase: Box::new(DefaultBroadPhase::new()),
+            camera: ArcBall::new(
+                kiss3d::nalgebra::Point3::new(64.0, 16.0, 0.0),
+                kiss3d::nalgebra::Point3::origin(),
+            ),
             ccd_solver: CCDSolver::new(),
             collider_set: ColliderSet::new(),
             gravity: Vector3::new(0.0, -9.81, 0.0),
@@ -151,6 +176,7 @@ impl World {
             narrow_phase: NarrowPhase::new(),
             physics_pipeline: PhysicsPipeline::new(),
             rigid_body_set: RigidBodySet::new(),
+            query_pipeline: QueryPipeline::new(),
             scene,
         }
     }
@@ -172,13 +198,14 @@ impl State for World {
             &self.gravity,
             &self.integration_parameters,
             &mut self.island_manager,
-            &mut self.broad_phase,
+            self.broad_phase.as_mut(),
             &mut self.narrow_phase,
             &mut self.rigid_body_set,
             &mut self.collider_set,
             &mut self.impulse_joint_set,
             &mut self.multibody_joint_set,
             &mut self.ccd_solver,
+            Some(&mut self.query_pipeline),
             &(),
             &(),
         );
