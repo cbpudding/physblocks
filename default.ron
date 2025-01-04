@@ -2697,5 +2697,8 @@ WorldArchive(
                 translation: (4.0, 32.0, -7.0)
             )
         )
+    ],
+    scripts: [
+        "print(\"Scripting works!\");"
     ]
 )

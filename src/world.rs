@@ -1,4 +1,7 @@
-use crate::block::{Block, BlockHandle};
+use crate::{
+    block::{Block, BlockHandle},
+    script::Script,
+};
 use kiss3d::{
     camera::{ArcBall, Camera},
     planar_camera::PlanarCamera,
@@ -12,15 +15,17 @@ use rapier3d::prelude::{
     IntegrationParameters, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline,
     QueryPipeline, RigidBodyBuilder, RigidBodySet, RigidBodyType,
 };
+use rhai::Engine;
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fs::File, io::Read, path::Path};
 
-pub struct World {
+pub struct World<'a> {
     blocks: Vec<BlockHandle>,
     broad_phase: Box<dyn BroadPhase>,
     camera: ArcBall,
     ccd_solver: CCDSolver,
     collider_set: ColliderSet,
+    engine: Engine,
     gravity: Vector3<f32>,
     impulse_joint_set: ImpulseJointSet,
     integration_parameters: IntegrationParameters,
@@ -31,9 +36,10 @@ pub struct World {
     rigid_body_set: RigidBodySet,
     query_pipeline: QueryPipeline,
     scene: SceneNode,
+    scripts: Vec<Script<'a>>,
 }
 
-impl World {
+impl<'a> World<'a> {
     pub fn add_block(&mut self, block: &Block) -> BlockHandle {
         let body = RigidBodyBuilder::new(if block.fixed {
             RigidBodyType::Fixed
@@ -61,6 +67,11 @@ impl World {
         handle
     }
 
+    pub(crate) fn add_script(&mut self, source: impl AsRef<str>) -> Result<(), Box<dyn Error>> {
+        self.scripts.push(Script::new(&self.engine, source)?);
+        Ok(())
+    }
+
     pub fn load<P: AsRef<Path>>(root: &mut SceneNode, path: P) -> Result<Self, Box<dyn Error>> {
         let mut file = File::open(path)?;
         let mut buffer = String::new();
@@ -69,6 +80,9 @@ impl World {
         let mut world = Self::new(root);
         for block in archive.blocks {
             world.add_block(&block);
+        }
+        for source in archive.scripts {
+            world.add_script(&source)?;
         }
         Ok(world)
     }
@@ -85,6 +99,7 @@ impl World {
             ),
             ccd_solver: CCDSolver::new(),
             collider_set: ColliderSet::new(),
+            engine: Engine::new(),
             gravity: Vector3::new(0.0, -9.81, 0.0),
             impulse_joint_set: ImpulseJointSet::new(),
             integration_parameters: IntegrationParameters::default(),
@@ -95,11 +110,12 @@ impl World {
             rigid_body_set: RigidBodySet::new(),
             query_pipeline: QueryPipeline::new(),
             scene,
+            scripts: Vec::new(),
         }
     }
 }
 
-impl State for World {
+impl State for World<'static> {
     fn cameras_and_effect(
         &mut self,
     ) -> (
@@ -134,5 +150,8 @@ impl State for World {
 
 #[derive(Deserialize, Serialize)]
 struct WorldArchive {
+    #[serde(default = "Vec::new")]
     blocks: Vec<Block>,
+    #[serde(default = "Vec::new")]
+    scripts: Vec<String>,
 }
