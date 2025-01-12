@@ -15,7 +15,7 @@ codegen-units = 1
 [dependencies]
 kiss3d = "0.35.0"
 nalgebra = { version = "0.33.2", features = ["serde-serialize"] }
-rapier3d = { version = "0.22.0", features = ["enhanced-determinism"] }
+rapier3d = { version = "0.23.0", features = ["enhanced-determinism"] }
 ron = "0.8.1"
 rhai = "1.20.1"
 serde = { version = "1.0.217", features = ["derive"] }
